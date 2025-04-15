@@ -13,6 +13,11 @@
 - **详细日志**：提供详细的操作日志和错误信息
 - **跨平台兼容**：支持Windows、macOS和Linux系统
 
+## 效果（例子）
+https://github.com/user-attachments/assets/a88f23eb-e36f-43ec-90ec-4bfe45395ce9
+
+
+
 ## 系统要求
 
 - Python 3.13 或更高版本
@@ -23,14 +28,14 @@
 ### 方式一：通过pip安装
 
 ```bash
-pip install git+https://github.com/yourusername/py-local-git-pull.git
+pip install git+https://github.com/crper/py-local-git-pull.git
 ```
 
 ### 方式二：本地开发安装
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/py-local-git-pull.git
+git clone https://github.com/crper/py-local-git-pull.git
 cd py-local-git-pull
 
 # 安装依赖

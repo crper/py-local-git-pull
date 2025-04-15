@@ -8,8 +8,7 @@ import logging
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import (BarColumn, Progress, TaskProgressColumn,
-                          TextColumn)
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +16,11 @@ logger = logging.getLogger(__name__)
 def create_progress(console: Console, description: str = "处理中") -> Progress:
     """
     创建一个进度条对象
-    
+
     Args:
         console: 控制台对象
         description: 进度条描述
-        
+
     Returns:
         Progress: 进度条对象
     """
@@ -39,12 +38,12 @@ def create_progress(console: Console, description: str = "处理中") -> Progres
 def create_status_panel(title: str, message: str, style: str = "blue") -> Panel:
     """
     创建一个状态面板
-    
+
     Args:
         title: 面板标题
         message: 面板内容
         style: 面板样式
-        
+
     Returns:
         Panel: 面板对象
     """

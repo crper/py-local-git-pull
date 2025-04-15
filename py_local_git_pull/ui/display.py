@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ..core.result_model import AheadBehind, BranchDetail, SyncResult
+from ..core.result_model import SyncResult
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 def create_result_table(results: List[SyncResult]) -> Tuple[Table, int]:
     """
     创建同步结果表格
-    
+
     Args:
         results: 仓库同步结果列表
-        
+
     Returns:
         Tuple[Table, int]: 表格对象和成功计数
     """
@@ -42,7 +42,7 @@ def create_result_table(results: List[SyncResult]) -> Tuple[Table, int]:
     success_count = 0
     for result in results:
         status = "[green]成功" if result.success else "[red]失败"
-        
+
         # 增强Stash状态显示
         if result.stashed:
             stashed = "[green]已暂存"
@@ -53,8 +53,7 @@ def create_result_table(results: List[SyncResult]) -> Tuple[Table, int]:
         if result.branch_details:
             for branch_detail in result.branch_details:
                 branch_name = branch_detail.name
-                is_current = (branch_detail.is_current or 
-                             branch_name == result.current_branch)
+                is_current = branch_detail.is_current or branch_name == result.current_branch
 
                 # 设置分支名称显示
                 branch_display = f"[bold blue]{branch_name}" if is_current else branch_name
@@ -123,11 +122,11 @@ def create_result_table(results: List[SyncResult]) -> Tuple[Table, int]:
             current_branch = result.current_branch or "无"
             synced = ", ".join(result.synced_branches) if result.synced_branches else "无"
             skipped = ", ".join(result.skipped_branches) if result.skipped_branches else "无"
-            
+
             # 设置上游关联状态
             upstream_info = "[green]已关联" if result.has_upstream else "[yellow]未关联"
             ahead_behind_info = "[blue]同步"  # 默认显示同步状态
-            
+
             # 设置详细信息
             details = f"错误: {result.error}" if result.error else ""
 
@@ -153,7 +152,7 @@ def create_result_table(results: List[SyncResult]) -> Tuple[Table, int]:
 def display_sync_results(results: List[SyncResult], console: Console) -> None:
     """
     显示同步结果
-    
+
     Args:
         results: 仓库同步结果列表
         console: 控制台对象
@@ -165,12 +164,12 @@ def display_sync_results(results: List[SyncResult], console: Console) -> None:
         table.add_column("状态")
         table.add_row("无", "[yellow]未找到可同步的Git仓库或分支")
         console.print(table)
-        
+
         stats_text = Text()
-        stats_text.append(f"总仓库数: 0\n", style="bold")
-        stats_text.append(f"成功: 0\n", style="bold green")
-        stats_text.append(f"失败: 0\n", style="dim")
-        
+        stats_text.append("总仓库数: 0\n", style="bold")
+        stats_text.append("成功: 0\n", style="bold green")
+        stats_text.append("失败: 0\n", style="dim")
+
         details_panel = Panel(stats_text, title="统计信息", border_style="green")
         console.print(details_panel)
         return
@@ -183,7 +182,7 @@ def display_sync_results(results: List[SyncResult], console: Console) -> None:
     stats_text = Text()
     stats_text.append(f"总仓库数: {len(results)}\n", style="bold")
     stats_text.append(f"成功: {success_count}\n", style="bold green")
-    
+
     fail_count = len(results) - success_count
     stats_text.append(
         f"失败: {fail_count}\n",

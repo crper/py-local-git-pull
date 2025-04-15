@@ -6,7 +6,6 @@
 
 import logging
 import logging.handlers
-import os
 from pathlib import Path
 from typing import Tuple
 
@@ -16,14 +15,16 @@ from rich.theme import Theme
 from rich.traceback import install
 
 
-def configure_logging(log_dir: str = "logs", log_level: int = logging.INFO) -> Tuple[Console, Console]:
+def configure_logging(
+    log_dir: str = "logs", log_level: int = logging.INFO
+) -> Tuple[Console, Console]:
     """
     配置日志系统
-    
+
     Args:
         log_dir: 日志文件目录
         log_level: 日志级别
-        
+
     Returns:
         Tuple[Console, Console]: 主控制台和日志控制台
     """
@@ -33,9 +34,9 @@ def configure_logging(log_dir: str = "logs", log_level: int = logging.INFO) -> T
     # 创建自定义主题，使日志颜色更加协调
     custom_theme = Theme(
         {
-            "info": "cyan", 
-            "warning": "yellow", 
-            "error": "bold red", 
+            "info": "cyan",
+            "warning": "yellow",
+            "error": "bold red",
             "debug": "dim",
             "success": "bold green",
         }
@@ -67,9 +68,9 @@ def configure_logging(log_dir: str = "logs", log_level: int = logging.INFO) -> T
             ),
             # 文件日志处理器
             logging.handlers.TimedRotatingFileHandler(
-                log_path / "git_sync.log", 
-                when="midnight", 
-                interval=1, 
+                log_path / "git_sync.log",
+                when="midnight",
+                interval=1,
                 backupCount=7,
                 encoding="utf-8",
             ),
@@ -78,5 +79,5 @@ def configure_logging(log_dir: str = "logs", log_level: int = logging.INFO) -> T
 
     # 设置第三方库的日志级别更高，减少干扰
     logging.getLogger("git").setLevel(logging.WARNING)
-    
+
     return main_console, log_console

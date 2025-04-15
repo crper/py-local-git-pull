@@ -9,7 +9,6 @@ import os
 import sys
 from typing import List
 
-from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
@@ -44,9 +43,7 @@ def git_sync(args) -> List[SyncResult]:
                 repos = find_git_repos(args.path, args.max_depth)
 
             if not repos:
-                main_console.print(
-                    f"[bold yellow]警告: 在路径 {args.path} 下未找到任何Git仓库"
-                )
+                main_console.print(f"[bold yellow]警告: 在路径 {args.path} 下未找到任何Git仓库")
                 return []
 
             main_console.print(f"[bold green]找到 {len(repos)} 个Git仓库")
@@ -57,9 +54,11 @@ def git_sync(args) -> List[SyncResult]:
             else:
                 main_console.print(f"[bold red]错误: 路径 {args.path} 不是Git仓库")
                 if os.path.isdir(args.path):
-                    main_console.print(
-                        f"[bold yellow]提示: 如果要搜索该目录下的Git仓库，请使用 --recursive 或 -r 参数"
+                    msg = (
+                        "[bold yellow]提示: 如果要搜索该目录下的Git仓库，"
+                        "请使用 --recursive 或 -r 参数"
                     )
+                    main_console.print(msg)
                 return []
 
         # 同步每个仓库，使用更美观的进度条
@@ -89,9 +88,7 @@ def git_sync(args) -> List[SyncResult]:
 
                 # 在仓库处理完成后添加更美观的分隔线
                 if repo_path != repos[-1]:  # 如果不是最后一个仓库
-                    main_console.print(
-                        Panel("", title="", border_style="dim", padding=0, height=1)
-                    )
+                    main_console.print(Panel("", title="", border_style="dim", padding=0, height=1))
 
                 progress.advance(task)
 
@@ -120,23 +117,17 @@ def main() -> None:
     # 显示欢迎信息
     welcome_text = Text()
     welcome_text.append("本地Git仓库同步工具\n", style="bold cyan")
-    welcome_text.append(
-        f"版本: {sys.modules['py_local_git_pull'].__version__}\n", style="dim"
-    )
+    welcome_text.append(f"版本: {sys.modules['py_local_git_pull'].__version__}\n", style="dim")
     welcome_text.append(f"目标路径: {args.path}\n", style="bold green")
 
     if args.recursive:
-        welcome_text.append(
-            f"递归模式: 是 (最大深度: {args.max_depth})\n", style="bold green"
-        )
+        welcome_text.append(f"递归模式: 是 (最大深度: {args.max_depth})\n", style="bold green")
     else:
         welcome_text.append("递归模式: 否\n", style="dim")
 
     # 显示分支参数
     if args.branches:
-        welcome_text.append(
-            f"多分支模式: {', '.join(args.branches)}\n", style="bold green"
-        )
+        welcome_text.append(f"多分支模式: {', '.join(args.branches)}\n", style="bold green")
     elif args.branch:
         welcome_text.append(f"指定分支: {args.branch}\n", style="bold green")
     else:
@@ -147,7 +138,7 @@ def main() -> None:
     )
 
     if args.no_stash:
-        welcome_text.append(f"跳过暂存: 是\n", style="bold yellow")
+        welcome_text.append("跳过暂存: 是\n", style="bold yellow")
 
     welcome_text.append(f"获取深度: {args.depth}\n", style="bold green")
 

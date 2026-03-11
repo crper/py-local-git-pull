@@ -10,6 +10,8 @@ import re
 import sys
 from typing import Optional
 
+from .constants import DefaultConfig
+
 
 def is_valid_branch_name(branch: str) -> bool:
     """
@@ -22,6 +24,22 @@ def is_valid_branch_name(branch: str) -> bool:
         bool: 分支名是否合法
     """
     return bool(re.match(r"^[A-Za-z0-9._\-/]+$", branch))
+
+
+def _positive_int(value: str) -> int:
+    """校验正整数参数（>=1）"""
+    int_value = int(value)
+    if int_value < 1:
+        raise argparse.ArgumentTypeError("必须是大于等于 1 的整数")
+    return int_value
+
+
+def _non_negative_int(value: str) -> int:
+    """校验非负整数参数（>=0）"""
+    int_value = int(value)
+    if int_value < 0:
+        raise argparse.ArgumentTypeError("必须是大于等于 0 的整数")
+    return int_value
 
 
 def parse_args(args=None) -> Optional[argparse.Namespace]:
@@ -60,16 +78,16 @@ def parse_args(args=None) -> Optional[argparse.Namespace]:
         "--skip-non-exist",
         action="store_true",
         help="跳过不存在于远程的分支",
-        default=True,
+        default=DefaultConfig.DEFAULT_SKIP_NON_EXIST,
     )
 
     # Git操作选项
     git_group = parser.add_argument_group("Git操作选项")
     git_group.add_argument(
         "--depth",
-        type=int,
+        type=_positive_int,
         help="指定fetch操作的深度，用于限制获取的提交历史数量。设置为1时只获取最新提交，适用于大仓库的快速同步",
-        default=1,
+        default=DefaultConfig.DEFAULT_DEPTH,
     )
     git_group.add_argument(
         "--no-stash",
@@ -89,15 +107,21 @@ def parse_args(args=None) -> Optional[argparse.Namespace]:
     )
     search_group.add_argument(
         "--max-depth",
-        type=int,
+        type=_non_negative_int,
         help="递归搜索的最大深度，仅在使用--recursive参数时有效",
-        default=3,
+        default=DefaultConfig.DEFAULT_MAX_DEPTH,
     )
 
     # 输出选项
     output_group = parser.add_argument_group("输出选项")
     output_group.add_argument(
         "--verbose", "-v", action="store_true", help="显示详细日志信息", default=False
+    )
+    output_group.add_argument(
+        "--output",
+        choices=["table", "json"],
+        default="table",
+        help="输出格式：table(默认) 或 json",
     )
 
     try:
@@ -110,6 +134,7 @@ def parse_args(args=None) -> Optional[argparse.Namespace]:
         if not (os.path.isdir(parsed_args.path) or os.path.isfile(parsed_args.path)):
             print(f"错误: 路径 '{parsed_args.path}' 不是有效的文件夹或文件")
             sys.exit(1)
+        parsed_args.path = os.path.abspath(parsed_args.path)
 
         # 分支参数一致性校验
         if parsed_args.branch and parsed_args.branches:
@@ -120,6 +145,8 @@ def parse_args(args=None) -> Optional[argparse.Namespace]:
             print(f"错误: 分支名 '{parsed_args.branch}' 不合法")
             sys.exit(1)
         if parsed_args.branches:
+            # 去重并保持顺序，避免重复同步同一分支
+            parsed_args.branches = list(dict.fromkeys(parsed_args.branches))
             for b in parsed_args.branches:
                 if not is_valid_branch_name(b):
                     print(f"错误: 分支名 '{b}' 不合法")

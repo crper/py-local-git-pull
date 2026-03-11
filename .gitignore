@@ -1,13 +1,49 @@
-# Python-generated files
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python cache / bytecode
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.hypothesis/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Packaging / build outputs
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
 
-# Virtual environments
-.venv
+# Test & coverage outputs
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 
-# logs
+# Logs / runtime artifacts
 logs/
+*.log
+
+# Tooling / local metadata
+.python-version
+.ropeproject/
+.superset/
+
+# Local env files
+.env
+.env.*

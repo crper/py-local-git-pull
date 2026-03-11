@@ -7,6 +7,8 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from ..config.constants import BranchStatus
+
 
 @dataclass
 class AheadBehind:
@@ -25,7 +27,7 @@ class BranchDetail:
     """
 
     name: str
-    status: str = "pending"  # pending, synced, skipped, error
+    status: BranchStatus = BranchStatus.PENDING
     is_current: bool = False
     exists_locally: bool = True
     exists_remotely: bool = True
@@ -51,6 +53,14 @@ class SyncResult:
     skipped_branches: List[str] = field(default_factory=list)
     branch_details: List[BranchDetail] = field(default_factory=list)
     error: Optional[str] = None
+
+    def mark_failed(self, error: Optional[str] = None) -> None:
+        """
+        将仓库结果标记为失败，并保留首个错误信息。
+        """
+        self.success = False
+        if error and not self.error:
+            self.error = error
 
     @property
     def has_upstream(self) -> bool:
@@ -82,7 +92,7 @@ class SyncResult:
             "branch_details": [
                 {
                     "name": b.name,
-                    "status": b.status,
+                    "status": b.status.value,
                     "is_current": b.is_current,
                     "exists_locally": b.exists_locally,
                     "exists_remotely": b.exists_remotely,
@@ -123,7 +133,7 @@ class SyncResult:
 
             branch_detail = BranchDetail(
                 name=branch_data["name"],
-                status=branch_data.get("status", "pending"),
+                status=BranchStatus(branch_data.get("status", BranchStatus.PENDING.value)),
                 is_current=branch_data.get("is_current", False),
                 exists_locally=branch_data.get("exists_locally", True),
                 exists_remotely=branch_data.get("exists_remotely", True),

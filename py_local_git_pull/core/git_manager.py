@@ -6,13 +6,18 @@ Git管理器模块
 
 import logging
 import os
-import subprocess
-from argparse import Namespace
-from typing import List, Optional, Tuple
+from datetime import datetime
+from typing import List, Optional, Set, Tuple
 
 from rich.console import Console
 
+from .git_executor import GitExecutor
+from .branch_syncer import BranchSyncer
 from .result_model import AheadBehind, BranchDetail, SyncResult
+from .sync_options import SyncOptions
+from ..config.constants import GitConstants, BranchStatus
+from ..exceptions import GitCommandError
+from ..utils.logger import GitLogger
 
 logger = logging.getLogger(__name__)
 
@@ -35,67 +40,52 @@ class GitManager:
         self.repo_path = repo_path
         self.repo_name = os.path.basename(repo_path)
         self.log_console = log_console
+        self.logger = GitLogger(__name__, log_console)
+        self.executor = GitExecutor(repo_path)
+        self.branch_syncer = BranchSyncer(self)
+        self._managed_stash_ref: Optional[str] = None
+        self._remote_branches_cache: Optional[Set[str]] = None
 
-    def log_info(self, message: str) -> None:
+    @staticmethod
+    def _format_git_error(error: Exception) -> str:
+        """统一格式化 Git 异常信息。"""
+        if isinstance(error, GitCommandError):
+            return error.stderr or error.stdout or str(error)
+        return str(error)
+
+    def _invalidate_remote_cache(self) -> None:
+        self._remote_branches_cache = None
+
+    def _load_remote_branches_cache(self) -> bool:
         """
-        记录信息日志
-
-        Args:
-            message: 日志消息
+        读取远程分支缓存（基于本地 refs/remotes 数据）。
         """
-        logger.info(message)
-        if self.log_console:
-            self.log_console.print(f"[green]信息: {message}")
+        returncode, stdout, stderr = self.executor.run(
+            [
+                "for-each-ref",
+                "--format=%(refname:short)",
+                f"refs/remotes/{GitConstants.DEFAULT_REMOTE}",
+            ],
+            check=False,
+        )
+        if returncode != 0:
+            self.logger.warning(f"读取远程分支缓存失败: {stderr or stdout}")
+            return False
 
-    def log_warning(self, message: str) -> None:
-        """
-        记录警告日志
+        prefix = f"{GitConstants.DEFAULT_REMOTE}/"
+        branches: Set[str] = set()
+        for line in stdout.splitlines():
+            ref_name = line.strip()
+            if not ref_name.startswith(prefix):
+                continue
+            branch = ref_name[len(prefix) :]
+            if not branch or branch == "HEAD":
+                continue
+            branches.add(branch)
 
-        Args:
-            message: 日志消息
-        """
-        logger.warning(message)
-        if self.log_console:
-            self.log_console.print(f"[yellow]警告: {message}")
+        self._remote_branches_cache = branches
+        return True
 
-    def log_error(self, message: str) -> None:
-        """
-        记录错误日志
-
-        Args:
-            message: 日志消息
-        """
-        logger.error(message)
-        if self.log_console:
-            self.log_console.print(f"[red]错误: {message}")
-
-    def run_git_command(self, command: List[str], check: bool = True) -> Tuple[int, str, str]:
-        """
-        执行Git命令
-
-        Args:
-            command: 命令参数列表
-            check: 是否检查命令执行状态
-
-        Returns:
-            Tuple[int, str, str]: 返回码、标准输出、标准错误
-
-        Raises:
-            subprocess.CalledProcessError: 如果check=True且命令执行失败
-        """
-        try:
-            full_command = ["git", "-C", self.repo_path] + command
-            process = subprocess.run(
-                full_command,
-                capture_output=True,
-                text=True,
-                check=check,
-            )
-            return process.returncode, process.stdout.strip(), process.stderr.strip()
-        except subprocess.CalledProcessError as e:
-            if check:
-                raise
-            return e.returncode, "", e.stderr.strip() if e.stderr else str(e)
 
     def get_current_branch(self) -> str:
         """
@@ -104,7 +94,7 @@ class GitManager:
         Returns:
             str: 当前分支名
         """
-        _, stdout, _ = self.run_git_command(["branch", "--show-current"])
+        _, stdout, _ = self.executor.run(["branch", "--show-current"])
         return stdout
 
     def has_changes(self) -> bool:
@@ -114,7 +104,7 @@ class GitManager:
         Returns:
             bool: 是否有未提交的更改
         """
-        _, stdout, _ = self.run_git_command(["status", "--porcelain"], check=False)
+        _, stdout, _ = self.executor.run(["status", "--porcelain"], check=False)
         return bool(stdout)
 
     def stash_changes(self) -> bool:
@@ -126,19 +116,33 @@ class GitManager:
         """
         try:
             # 检查是否存在初始提交
-            has_commits = (
-                self.run_git_command(["rev-parse", "--verify", "HEAD"], check=False)[0] == 0
-            )
+            has_commits = self.executor.run(
+                ["rev-parse", "--verify", GitConstants.HEAD_REF],
+                check=False,
+            )[0] == 0
 
             if not has_commits:
-                self.log_warning(f"仓库 {self.repo_name} 没有初始提交，跳过stash操作")
+                self.logger.warning(f"仓库 {self.repo_name} 没有初始提交，跳过stash操作")
                 return False
 
-            self.run_git_command(["stash"])
-            self.log_info(f"在仓库 {self.repo_name} 中暂存了本地更改")
+            stash_message = f"py-local-git-pull:{self.repo_name}:{datetime.now().isoformat()}"
+            _, stdout, _ = self.executor.run(
+                ["stash", "push", "--include-untracked", "-m", stash_message]
+            )
+            if "No local changes to save" in stdout:
+                return False
+
+            returncode, stash_list, _ = self.executor.run(["stash", "list"], check=False)
+            if returncode == 0:
+                for line in stash_list.splitlines():
+                    if stash_message in line:
+                        self._managed_stash_ref = line.split(":")[0]
+                        break
+
+            self.logger.info(f"在仓库 {self.repo_name} 中暂存了本地更改")
             return True
-        except subprocess.CalledProcessError as e:
-            self.log_error(f"暂存本地更改失败: {e}")
+        except GitCommandError as e:
+            self.logger.error(f"暂存本地更改失败: {self._format_git_error(e)}")
             return False
 
     def pop_stash(self) -> bool:
@@ -149,17 +153,16 @@ class GitManager:
             bool: 是否成功恢复
         """
         try:
-            # 检查是否有stash
-            _, stdout, _ = self.run_git_command(["stash", "list"], check=False)
-            if not stdout:
-                self.log_warning(f"仓库 {self.repo_name} 没有可恢复的stash，跳过恢复操作")
+            if not self._managed_stash_ref:
                 return False
 
-            self.run_git_command(["stash", "pop"])
-            self.log_info(f"在仓库 {self.repo_name} 中恢复了暂存的本地更改")
+            # 精确恢复本次创建的 stash，避免误恢复到历史记录。
+            self.executor.run(["stash", "pop", self._managed_stash_ref])
+            self.logger.info(f"在仓库 {self.repo_name} 中恢复了暂存的本地更改")
+            self._managed_stash_ref = None
             return True
-        except subprocess.CalledProcessError as e:
-            self.log_error(f"恢复暂存的本地更改失败: {e}")
+        except GitCommandError as e:
+            self.logger.error(f"恢复暂存的本地更改失败: {self._format_git_error(e)}")
             return False
 
     def fetch(self, depth: Optional[int] = None) -> bool:
@@ -177,11 +180,13 @@ class GitManager:
             if depth:
                 command.extend(["--depth", str(depth)])
 
-            self.run_git_command(command)
-            self.log_info(f"在仓库 {self.repo_name} 中完成Git fetch操作")
+            self.executor.run(command)
+            self._invalidate_remote_cache()
+            self._load_remote_branches_cache()
+            self.logger.info(f"在仓库 {self.repo_name} 中完成Git fetch操作")
             return True
-        except subprocess.CalledProcessError as e:
-            self.log_error(f"Git fetch操作失败: {e}")
+        except GitCommandError as e:
+            self.logger.error(f"Git fetch操作失败: {self._format_git_error(e)}")
             return False
 
     def branch_exists_locally(self, branch: str) -> bool:
@@ -194,7 +199,7 @@ class GitManager:
         Returns:
             bool: 分支是否存在
         """
-        _, stdout, _ = self.run_git_command(["branch", "--list", branch], check=False)
+        _, stdout, _ = self.executor.run(["branch", "--list", branch], check=False)
         return bool(stdout)
 
     def branch_exists_remotely(self, branch: str) -> bool:
@@ -207,10 +212,20 @@ class GitManager:
         Returns:
             bool: 分支是否存在
         """
-        returncode, stdout, _ = self.run_git_command(
-            ["ls-remote", "--heads", "origin", branch], check=False
+        if self._remote_branches_cache is not None:
+            return branch in self._remote_branches_cache
+
+        if self._load_remote_branches_cache():
+            return branch in (self._remote_branches_cache or set())
+
+        # 缓存不可用时回退到实时查询。
+        returncode, stdout, _ = self.executor.run(
+            ["ls-remote", "--heads", GitConstants.DEFAULT_REMOTE, branch], check=False
         )
-        return returncode == 0 and bool(stdout)
+        exists = returncode == 0 and bool(stdout)
+        if exists and self._remote_branches_cache is not None:
+            self._remote_branches_cache.add(branch)
+        return exists
 
     def checkout_branch(
         self, branch: str, create_if_not_exist: bool = True
@@ -227,20 +242,22 @@ class GitManager:
         """
         try:
             if self.branch_exists_locally(branch):
-                self.run_git_command(["checkout", branch])
-                self.log_info(f"切换到分支: {branch}")
+                self.executor.run(["checkout", branch])
+                self.logger.info(f"切换到分支: {branch}")
                 return True, None
             elif create_if_not_exist and self.branch_exists_remotely(branch):
-                self.run_git_command(["checkout", "-b", branch, f"origin/{branch}"])
-                self.log_info(f"创建并切换到分支: {branch}")
+                self.executor.run(
+                    ["checkout", "-b", branch, f"{GitConstants.DEFAULT_REMOTE}/{branch}"]
+                )
+                self.logger.info(f"创建并切换到分支: {branch}")
                 return True, None
             else:
                 error_msg = f"分支 {branch} 不存在"
-                self.log_warning(error_msg)
+                self.logger.warning(error_msg)
                 return False, error_msg
-        except subprocess.CalledProcessError as e:
-            error_msg = str(e)
-            self.log_error(f"切换分支失败: {error_msg}")
+        except GitCommandError as e:
+            error_msg = self._format_git_error(e)
+            self.logger.error(f"切换分支失败: {error_msg}")
             return False, error_msg
 
     def set_upstream(
@@ -258,7 +275,7 @@ class GitManager:
         """
         try:
             # 检查是否已设置上游分支
-            returncode, stdout, _ = self.run_git_command(
+            returncode, stdout, _ = self.executor.run(
                 ["rev-parse", "--abbrev-ref", "--symbolic-full-name", f"{branch}@{{u}}"],
                 check=False,
             )
@@ -266,28 +283,33 @@ class GitManager:
             # 如果已设置上游分支，返回成功
             if returncode == 0:
                 upstream = stdout
-                self.log_info(f"分支 {branch} 已关联上游分支: {upstream}")
+                self.logger.info(f"分支 {branch} 已关联上游分支: {upstream}")
                 return True, upstream, None
 
             # 如果未设置上游分支且不自动设置，返回失败
             if not auto_upstream:
-                self.log_warning(f"分支 {branch} 未关联上游分支，且未启用自动关联")
                 return False, "", None
 
             # 检查远程分支是否存在
             if not self.branch_exists_remotely(branch):
-                error_msg = f"远程分支 origin/{branch} 不存在"
-                self.log_warning(f"{error_msg}，无法设置上游分支")
+                error_msg = f"远程分支 {GitConstants.DEFAULT_REMOTE}/{branch} 不存在"
+                self.logger.warning(f"{error_msg}，无法设置上游分支")
                 return False, "", error_msg
 
             # 设置上游分支
-            self.run_git_command(["branch", f"--set-upstream-to=origin/{branch}", branch])
-            upstream = f"origin/{branch}"
-            self.log_info(f"成功设置分支 {branch} 的上游分支为 {upstream}")
+            self.executor.run(
+                [
+                    "branch",
+                    f"--set-upstream-to={GitConstants.DEFAULT_REMOTE}/{branch}",
+                    branch,
+                ]
+            )
+            upstream = f"{GitConstants.DEFAULT_REMOTE}/{branch}"
+            self.logger.info(f"成功设置分支 {branch} 的上游分支为 {upstream}")
             return True, upstream, None
-        except subprocess.CalledProcessError as e:
-            error_msg = str(e)
-            self.log_error(f"设置上游分支失败: {error_msg}")
+        except GitCommandError as e:
+            error_msg = self._format_git_error(e)
+            self.logger.error(f"设置上游分支失败: {error_msg}")
             return False, "", error_msg
 
     def pull(self) -> Tuple[bool, Optional[str]]:
@@ -298,12 +320,12 @@ class GitManager:
             Tuple[bool, Optional[str]]: 是否成功和错误信息
         """
         try:
-            self.run_git_command(["pull"])
-            self.log_info("成功同步当前分支")
+            self.executor.run(["pull", "--ff-only"])
+            self.logger.info("成功同步当前分支")
             return True, None
-        except subprocess.CalledProcessError as e:
-            error_msg = str(e)
-            self.log_error(f"拉取更新失败: {error_msg}")
+        except GitCommandError as e:
+            error_msg = self._format_git_error(e)
+            self.logger.error(f"拉取更新失败: {error_msg}")
             return False, error_msg
 
     def get_branch_details(self) -> List[BranchDetail]:
@@ -317,7 +339,7 @@ class GitManager:
         current_branch = self.get_current_branch()
 
         # 获取本地分支列表
-        _, local_branches_output, _ = self.run_git_command(["branch", "--list"], check=False)
+        _, local_branches_output, _ = self.executor.run(["branch", "--list"], check=False)
         if not local_branches_output:
             return branch_details
 
@@ -339,7 +361,7 @@ class GitManager:
                 name=branch_name,
                 is_current=is_current,
                 exists_locally=True,
-                status="pending",
+                status=BranchStatus.PENDING,
             )
 
             # 检查远程分支是否存在
@@ -353,7 +375,7 @@ class GitManager:
             # 如果有上游分支，获取ahead/behind信息
             if has_upstream:
                 try:
-                    _, output, _ = self.run_git_command(
+                    _, output, _ = self.executor.run(
                         ["rev-list", "--left-right", "--count", f"{branch_name}...{upstream_name}"],
                         check=False,
                     )
@@ -364,7 +386,7 @@ class GitManager:
                                 ahead=int(counts[0]),
                                 behind=int(counts[1]),
                             )
-                except (subprocess.CalledProcessError, ValueError):
+                except (GitCommandError, ValueError):
                     # 如果无法获取ahead/behind信息，保持为None
                     pass
 
@@ -372,12 +394,12 @@ class GitManager:
 
         return branch_details
 
-    def sync_repo(self, args: Namespace) -> SyncResult:
+    def sync_repo(self, options: SyncOptions) -> SyncResult:
         """
         同步仓库
 
         Args:
-            args: 命令行参数
+            options: 核心同步配置
 
         Returns:
             SyncResult: 同步结果
@@ -392,258 +414,111 @@ class GitManager:
         current_branch = self.get_current_branch()
         result.current_branch = current_branch
 
+        stashed = False
         try:
             # 检查仓库状态
             is_bare = False
-            returncode, stdout, _ = self.run_git_command(
+            returncode, stdout, _ = self.executor.run(
                 ["rev-parse", "--is-bare-repository"], check=False
             )
-            if returncode == 0 and stdout == "true":
+            if returncode == 0 and stdout == GitConstants.BARE_REPO_VALUE:
                 is_bare = True
-                self.log_warning(f"仓库 {self.repo_name} 是裸仓库，将跳过stash等操作")
+                self.logger.warning(f"仓库 {self.repo_name} 是裸仓库，将跳过stash等操作")
 
             # 执行fetch操作
-            if not self.fetch(args.depth):
-                result.success = False
-                result.error = "Fetch操作失败"
+            if not self.fetch(options.depth):
+                result.mark_failed("Fetch操作失败")
                 return result
 
             # 处理本地更改
-            stashed = False
-            if not is_bare and self.has_changes() and not args.no_stash:
+            if not is_bare and self.has_changes() and not options.no_stash:
                 stashed = self.stash_changes()
                 result.stashed = stashed
 
             # 根据参数选择操作模式
-            if args.branches:
+            if options.branches:
                 # 多分支模式
-                self._sync_multiple_branches(args, result)
-            elif args.branch:
+                self._sync_multiple_branches(options, result)
+            elif options.branch:
                 # 单一指定分支模式
-                self._sync_single_branch(args.branch, args, result)
+                self._sync_single_branch(options.branch, options, result)
             else:
                 # 当前分支模式
-                self._sync_current_branch(args, result)
-
-            # 恢复原始分支
-            if current_branch and current_branch != self.get_current_branch():
-                success, error = self.checkout_branch(current_branch, False)
-                if not success:
-                    self.log_warning(f"无法返回原始分支 {current_branch}: {error}")
-
-            # 恢复暂存的更改
-            if stashed:
-                self.pop_stash()
+                self._sync_current_branch(options, result)
 
             return result
 
         except Exception as e:
-            self.log_error(f"同步仓库 {self.repo_name} 时发生错误: {e}")
-            result.success = False
-            result.error = str(e)
+            self.logger.error(f"同步仓库 {self.repo_name} 时发生错误: {e}")
+            result.mark_failed(str(e))
             return result
+        finally:
+            if current_branch:
+                try:
+                    active_branch = self.get_current_branch()
+                    if active_branch and current_branch != active_branch:
+                        success, error = self.checkout_branch(current_branch, False)
+                        if not success:
+                            self.logger.warning(f"无法返回原始分支 {current_branch}: {error}")
+                except Exception as restore_branch_error:
+                    self.logger.error(f"恢复原始分支失败: {restore_branch_error}")
 
-    def _sync_current_branch(self, args: Namespace, result: SyncResult) -> None:
+            if stashed and not options.no_stash:
+                self.pop_stash()
+
+    def _sync_current_branch(self, options: SyncOptions, result: SyncResult) -> None:
         """
         同步当前分支
 
         Args:
-            args: 命令行参数
+            options: 核心同步配置
             result: 同步结果对象
         """
         branch = self.get_current_branch()
         if not branch:
-            self.log_error("无法确定当前分支")
-            result.success = False
-            result.error = "无法确定当前分支"
+            self.logger.error("无法确定当前分支")
+            result.mark_failed("无法确定当前分支")
             return
 
-        branch_detail = BranchDetail(
-            name=branch,
-            is_current=True,
-            status="pending",
+        branch_detail = self.branch_syncer.sync_single_branch(
+            branch, options, result, is_current=True
         )
+        if branch_detail:
+            result.branch_details.append(branch_detail)
 
-        # 设置上游分支
-        has_upstream, upstream_name, error = self.set_upstream(branch, args.auto_upstream)
-        branch_detail.has_upstream = has_upstream
-        branch_detail.upstream_name = upstream_name
-
-        if error:
-            branch_detail.error = error
-
-        if has_upstream:
-            # 执行pull操作
-            success, pull_error = self.pull()
-            if success:
-                result.synced_branches.append(branch)
-                branch_detail.status = "synced"
-            else:
-                result.skipped_branches.append(branch)
-                branch_detail.status = "error"
-                branch_detail.error = pull_error
-                result.success = False
-                result.error = pull_error
-        else:
-            result.skipped_branches.append(branch)
-            branch_detail.status = "skipped"
-            branch_detail.error = "无上游分支"
-
-        result.branch_details.append(branch_detail)
-
-    def _sync_single_branch(self, branch: str, args: Namespace, result: SyncResult) -> None:
+    def _sync_single_branch(
+        self,
+        branch: str,
+        options: SyncOptions,
+        result: SyncResult,
+    ) -> None:
         """
         同步单个指定分支
 
         Args:
             branch: 分支名
-            args: 命令行参数
+            options: 核心同步配置
             result: 同步结果对象
         """
-        # 检查分支是否存在
-        branch_detail = BranchDetail(
-            name=branch,
-            status="pending",
-        )
-
-        # 检查分支是否存在于本地
-        branch_detail.exists_locally = self.branch_exists_locally(branch)
-
-        # 检查分支是否存在于远程
-        branch_detail.exists_remotely = self.branch_exists_remotely(branch)
-
-        # 如果分支不存在于本地也不存在于远程，跳过
-        if not branch_detail.exists_locally and not branch_detail.exists_remotely:
-            self.log_warning(f"分支 {branch} 在本地和远程都不存在，跳过切换")
-            result.skipped_branches.append(branch)
-            branch_detail.status = "skipped"
-            branch_detail.error = "分支不存在"
+        branch_detail = self.branch_syncer.sync_single_branch(branch, options, result)
+        if branch_detail:
             result.branch_details.append(branch_detail)
-            return
 
-        # 切换到分支
-        success, error = self.checkout_branch(branch, True)
-        if not success:
-            result.skipped_branches.append(branch)
-            branch_detail.status = "error"
-            branch_detail.error = error
-            result.branch_details.append(branch_detail)
-            return
-
-        # 标记为当前分支
-        branch_detail.is_current = True
-
-        # 设置上游分支
-        has_upstream, upstream_name, error = self.set_upstream(branch, args.auto_upstream)
-        branch_detail.has_upstream = has_upstream
-        branch_detail.upstream_name = upstream_name
-
-        if error:
-            branch_detail.error = error
-
-        if has_upstream:
-            # 执行pull操作
-            success, pull_error = self.pull()
-            if success:
-                result.synced_branches.append(branch)
-                branch_detail.status = "synced"
-            else:
-                result.skipped_branches.append(branch)
-                branch_detail.status = "error"
-                branch_detail.error = pull_error
-                result.success = False
-                result.error = pull_error
-        else:
-            result.skipped_branches.append(branch)
-            branch_detail.status = "skipped"
-            branch_detail.error = "无上游分支"
-
-        result.branch_details.append(branch_detail)
-
-    def _sync_multiple_branches(self, args: Namespace, result: SyncResult) -> None:
+    def _sync_multiple_branches(self, options: SyncOptions, result: SyncResult) -> None:
         """
         同步多个分支
 
         Args:
-            args: 命令行参数
+            options: 核心同步配置
             result: 同步结果对象
         """
-        if not args.branches:
+        if not options.branches:
             return
 
-        # 记录原始分支，用于操作结束后恢复
-        original_branch = self.get_current_branch()
-
-        for branch in args.branches:
-            branch_detail = BranchDetail(
-                name=branch,
-                status="pending",
+        for branch in options.branches:
+            # 使用 branch_syncer 同步
+            sync_result = self.branch_syncer.sync_single_branch(
+                branch, options, result
             )
-
-            # 检查分支是否存在于本地
-            branch_detail.exists_locally = self.branch_exists_locally(branch)
-
-            # 检查分支是否存在于远程
-            branch_detail.exists_remotely = self.branch_exists_remotely(branch)
-
-            # 如果远程分支不存在，跳过
-            if not branch_detail.exists_remotely:
-                self.log_warning(f"远程分支 origin/{branch} 不存在，跳过")
-                result.skipped_branches.append(branch)
-                branch_detail.status = "skipped"
-                branch_detail.error = "远程分支不存在"
-                result.branch_details.append(branch_detail)
-                continue
-
-            # 如果本地分支不存在且配置了跳过不存在的分支
-            if not branch_detail.exists_locally and args.skip_non_exist:
-                self.log_warning(f"本地分支 {branch} 不存在，跳过")
-                result.skipped_branches.append(branch)
-                branch_detail.status = "skipped"
-                branch_detail.error = "本地分支不存在"
-                result.branch_details.append(branch_detail)
-                continue
-
-            # 切换到分支
-            success, error = self.checkout_branch(branch, not args.skip_non_exist)
-            if not success:
-                result.skipped_branches.append(branch)
-                branch_detail.status = "error"
-                branch_detail.error = error
-                result.branch_details.append(branch_detail)
-                continue
-
-            # 标记为当前分支
-            branch_detail.is_current = True
-
-            # 设置上游分支
-            has_upstream, upstream_name, error = self.set_upstream(branch, args.auto_upstream)
-            branch_detail.has_upstream = has_upstream
-            branch_detail.upstream_name = upstream_name
-
-            if error:
-                branch_detail.error = error
-
-            if has_upstream:
-                # 执行pull操作
-                success, pull_error = self.pull()
-                if success:
-                    result.synced_branches.append(branch)
-                    branch_detail.status = "synced"
-                else:
-                    result.skipped_branches.append(branch)
-                    branch_detail.status = "error"
-                    branch_detail.error = pull_error
-            else:
-                result.skipped_branches.append(branch)
-                branch_detail.status = "skipped"
-                branch_detail.error = "无上游分支"
-
-            result.branch_details.append(branch_detail)
-
-        # 恢复原始分支
-        if original_branch:
-            success, _ = self.checkout_branch(original_branch, False)
-            if not success:
-                self.log_warning(f"无法返回原始分支 {original_branch}")
-                # 在这里不设置result.success = False，因为这只是一个次要错误
+            if sync_result:
+                result.branch_details.append(sync_result)
